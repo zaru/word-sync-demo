@@ -103,6 +103,96 @@ describe("EditorAuthPanel", () => {
 		);
 	});
 
+	it("keeps multiple active Word編集セッション visible so either can be finished", async () => {
+		let nextSessionNumber = 1;
+		const fetchWordEditSession = vi.fn(
+			async (url: RequestInfo | URL, init?: RequestInit) => {
+				if (String(url) === "/api/word-edit-sessions") {
+					const sessionNumber = nextSessionNumber++;
+
+					return Response.json(
+						{
+							launchLinks: {
+								officeUri: `ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-${sessionNumber}.docx`,
+								oneDriveFallbackUrl: `https://onedrive.example/Webドキュメント-word-session-${sessionNumber}.docx`,
+							},
+							sessionId: `word-session-${sessionNumber}`,
+							workingCopy: {
+								driveItemId: `drive-item-${sessionNumber}`,
+								fileName: `Webドキュメント-word-session-${sessionNumber}.docx`,
+							},
+						},
+						{ status: 201 },
+					);
+				}
+
+				if (
+					String(url) === "/api/word-edit-sessions/word-session-1/finish" &&
+					init?.method === "POST"
+				) {
+					return Response.json({
+						webDocument: {
+							id: "shared",
+							markdown: "# First Word import",
+							version: 4,
+						},
+					});
+				}
+
+				throw new Error(`Unexpected fetch: ${String(url)}`);
+			},
+		);
+		vi.stubGlobal("fetch", fetchWordEditSession);
+		render(
+			<EditorAuthPanel
+				session={{
+					signedIn: true,
+					editor: {
+						id: "editor-1",
+						displayName: "編集者 A",
+						username: "editor@example.com",
+					},
+				}}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Word編集セッションを開始" }),
+		);
+		expect(
+			await screen.findByText("Webドキュメント-word-session-1.docx"),
+		).toBeInTheDocument();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Word編集セッションを開始" }),
+		);
+
+		expect(
+			await screen.findByText("Webドキュメント-word-session-2.docx"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Webドキュメント-word-session-1.docx"),
+		).toBeInTheDocument();
+
+		const finishButtons = screen.getAllByRole("button", {
+			name: "Word編集セッションを終了して取り込む",
+		});
+		expect(finishButtons).toHaveLength(2);
+
+		fireEvent.click(finishButtons[0]);
+
+		expect(
+			await screen.findByText("終了取り込みが完了しました。Version 4"),
+		).toBeInTheDocument();
+		expect(fetchWordEditSession).toHaveBeenCalledWith(
+			"/api/word-edit-sessions/word-session-1/finish",
+			{ method: "POST" },
+		);
+		expect(
+			screen.getByText("Webドキュメント-word-session-2.docx"),
+		).toBeInTheDocument();
+	});
+
 	it("finishes an active Word編集セッション and shows the imported Webドキュメント version", async () => {
 		const fetchWordEditSession = vi.fn(
 			async (url: RequestInfo | URL, init?: RequestInit) => {

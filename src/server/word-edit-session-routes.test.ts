@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { WebDocumentStore } from "../domain/web-document-store";
 import { editorSessionCookieName } from "./editor-auth-routes";
 import { EditorAuthStore } from "./editor-auth-store";
 import { createWordEditSessionHandlers } from "./word-edit-session-routes";
@@ -27,6 +28,10 @@ describe("Word編集セッション routes", () => {
 			}),
 			wordEditSessionStore: createWordEditSessionStore({
 				databasePath: join(tempDir, "word-edit-sessions.sqlite"),
+			}),
+			webDocumentStore: new WebDocumentStore({
+				databasePath: join(tempDir, "web-document.sqlite"),
+				seedMarkdown: "# Before Word編集セッション",
 			}),
 		};
 	}
@@ -389,6 +394,184 @@ describe("Word編集セッション routes", () => {
 			id: "shared",
 			markdown: "# Imported from Word",
 			version: 4,
+		});
+	});
+
+	it("uses 最後取り込み優先 when two Word編集セッション and a Web autosave update the same Webドキュメント", async () => {
+		const { editorAuthStore, webDocumentStore, wordEditSessionStore } =
+			createStores();
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		const importedMarkdownByDriveItem = new Map([
+			["drive-item-1", "# First Word import"],
+			["drive-item-2", "# Second Word import"],
+		]);
+		const uploadedWorkingCopies: Array<{
+			content: Uint8Array;
+			driveItemId: string;
+			fileName: string;
+		}> = [];
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown(input) {
+					return new TextDecoder().decode(input.content);
+				},
+			},
+			createSessionId: createSequentialId("word-session"),
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy(input) {
+					const driveItemId = `drive-item-${uploadedWorkingCopies.length + 1}`;
+					uploadedWorkingCopies.push({
+						content: input.content,
+						driveItemId,
+						fileName: input.fileName,
+					});
+
+					return {
+						driveItemId,
+						webUrl: `https://onedrive.example/${input.fileName}`,
+					};
+				},
+				async downloadAppFolderWorkingCopy(input) {
+					const markdown = importedMarkdownByDriveItem.get(input.driveItemId);
+
+					if (!markdown) {
+						throw new Error(`Unexpected drive item: ${input.driveItemId}`);
+					}
+
+					return new TextEncoder().encode(markdown);
+				},
+			},
+			webDocumentStore,
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		await handlers.start(request);
+		await handlers.finish(request, { sessionId: "word-session-1" });
+		webDocumentStore.saveMarkdown("# Web autosave between imports");
+		const finalFinishResponse = await handlers.finish(request, {
+			sessionId: "word-session-2",
+		});
+
+		expect(uploadedWorkingCopies).toEqual([
+			{
+				content: new TextEncoder().encode("# Before Word編集セッション"),
+				driveItemId: "drive-item-1",
+				fileName: "Webドキュメント-word-session-1.docx",
+			},
+			{
+				content: new TextEncoder().encode("# Before Word編集セッション"),
+				driveItemId: "drive-item-2",
+				fileName: "Webドキュメント-word-session-2.docx",
+			},
+		]);
+		expect(finalFinishResponse.status).toBe(200);
+		await expect(finalFinishResponse.json()).resolves.toEqual({
+			webDocument: {
+				id: "shared",
+				markdown: "# Second Word import",
+				version: 4,
+			},
+		});
+		expect(webDocumentStore.loadSharedDocument()).toEqual({
+			id: "shared",
+			markdown: "# Second Word import",
+			version: 4,
+		});
+	});
+
+	it("ignores later OneDrive作業コピー changes after a Word編集セッション has ended", async () => {
+		const { editorAuthStore, webDocumentStore, wordEditSessionStore } =
+			createStores();
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		let workingCopyMarkdown = "# Word import before session end";
+		let downloadCount = 0;
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown(input) {
+					return new TextDecoder().decode(input.content);
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy(input) {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl: `https://onedrive.example/${input.fileName}`,
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					downloadCount += 1;
+
+					return new TextEncoder().encode(workingCopyMarkdown);
+				},
+			},
+			webDocumentStore,
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		const finishResponse = await handlers.finish(request, {
+			sessionId: "word-session-1",
+		});
+		workingCopyMarkdown = "# Word edit after session end";
+		const secondFinishResponse = await handlers.finish(request, {
+			sessionId: "word-session-1",
+		});
+
+		expect(finishResponse.status).toBe(200);
+		expect(secondFinishResponse.status).toBe(409);
+		await expect(secondFinishResponse.json()).resolves.toEqual({
+			error: {
+				message: "Word編集セッション is already closed.",
+				type: "invalidSessionState",
+			},
+			session: {
+				sessionId: "word-session-1",
+				status: "finished",
+			},
+		});
+		expect(downloadCount).toBe(1);
+		expect(webDocumentStore.loadSharedDocument()).toEqual({
+			id: "shared",
+			markdown: "# Word import before session end",
+			version: 2,
 		});
 	});
 
