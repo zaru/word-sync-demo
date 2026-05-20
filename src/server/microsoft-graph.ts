@@ -1,6 +1,6 @@
 import { ConfidentialClientApplication } from "@azure/msal-node";
 
-import type { GraphAppFolderBoundary } from "./word-edit-session-routes";
+import type { GraphAppFolderBoundary } from "./word-edit-session-lifecycle";
 
 const microsoftAuthority = "https://login.microsoftonline.com/common";
 const graphAppFolderUploadScope = "Files.ReadWrite.AppFolder";

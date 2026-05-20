@@ -2,48 +2,19 @@ import type { WebDocument } from "../domain/web-document-store";
 import { editorSessionCookieName } from "./editor-auth-routes";
 import type { EditorAuthStore } from "./editor-auth-store";
 import type {
-	WordEditSessionState,
-	WordEditSessionStore,
-} from "./word-edit-session-store";
-
-export type MarkdownDocxConverter = {
-	convertMarkdownToDocx(input: { markdown: string }): Promise<Uint8Array>;
-	convertDocxToMarkdown(input: {
-		content: Uint8Array;
-	}): Promise<string | DocxToMarkdownResult>;
-};
-
-export type DocxToMarkdownResult = {
-	markdown: string;
-	notifications?: ImportNotification[];
-};
-
-export type ImportNotification = {
-	message: string;
-	type: "unsupportedContentDiscarded";
-};
-
-export type GraphAppFolderBoundary = {
-	uploadAppFolderWorkingCopy(input: {
-		content: Uint8Array;
-		fileName: string;
-		tokenCache: string;
-	}): Promise<{
-		driveItemId: string;
-		webUrl: string;
-	}>;
-	downloadAppFolderWorkingCopy(input: {
-		driveItemId: string;
-		tokenCache: string;
-	}): Promise<Uint8Array>;
-	deleteAppFolderWorkingCopy(input: {
-		driveItemId: string;
-		tokenCache: string;
-	}): Promise<void>;
-};
-
-const abandonedSessionTimeoutMs = 2 * 60 * 60 * 1_000;
-const workingCopyDeletionGraceMs = 24 * 60 * 60 * 1_000;
+	DiscardImportErrorOutcome,
+	DocxToMarkdownResult,
+	FinishWordEditSessionOutcome,
+	GraphAppFolderBoundary,
+	MarkdownDocxConverter,
+	OneDriveWorkingCopyAdapter,
+	StartWordEditSessionOutcome,
+} from "./word-edit-session-lifecycle";
+import {
+	createGraphAccessRequiredError,
+	createWordEditSessionLifecycle,
+} from "./word-edit-session-lifecycle";
+import type { WordEditSessionStore } from "./word-edit-session-store";
 
 export function createWordEditSessionHandlers(options: {
 	converter: MarkdownDocxConverter;
@@ -57,12 +28,16 @@ export function createWordEditSessionHandlers(options: {
 	};
 	wordEditSessionStore: WordEditSessionStore;
 }) {
+	const lifecycle = createWordEditSessionLifecycle({
+		createSessionId: options.createSessionId,
+		oneDriveWorkingCopies: createOneDriveWorkingCopyAdapter(options),
+		webDocumentStore: options.webDocumentStore,
+		wordEditSessionStore: options.wordEditSessionStore,
+	});
+
 	return {
 		async start(request: Request): Promise<Response> {
-			const browserSessionId = readCookie(request, editorSessionCookieName);
-			const editorSession = browserSessionId
-				? options.editorAuthStore.readSession(browserSessionId)
-				: undefined;
+			const editorSession = readEditorSession(request, options.editorAuthStore);
 
 			if (!editorSession) {
 				return Response.json(
@@ -71,52 +46,8 @@ export function createWordEditSessionHandlers(options: {
 				);
 			}
 
-			const tokenCache = options.editorAuthStore.readTokenCache(
-				editorSession.editor.id,
-			);
-
-			if (!tokenCache) {
-				return Response.json(
-					{ error: "Graph access is required" },
-					{ status: 401 },
-				);
-			}
-
-			const sessionId = options.createSessionId();
-			const webDocument = options.webDocumentStore.loadSharedDocument();
-			const content = await options.converter.convertMarkdownToDocx({
-				markdown: webDocument.markdown,
-			});
-			const workingCopyFileName = `Webドキュメント-${sessionId}.docx`;
-			const uploadedWorkingCopy =
-				await options.graph.uploadAppFolderWorkingCopy({
-					content,
-					fileName: workingCopyFileName,
-					tokenCache,
-				});
-			const wordEditSession = options.wordEditSessionStore.saveStartedSession({
-				driveItemId: uploadedWorkingCopy.driveItemId,
-				editorId: editorSession.editor.id,
-				oneDriveWebUrl: uploadedWorkingCopy.webUrl,
-				sessionId,
-				webDocumentId: webDocument.id,
-				webDocumentVersion: webDocument.version,
-				workingCopyFileName,
-			});
-
-			return Response.json(
-				{
-					launchLinks: {
-						officeUri: createWordOfficeUri(wordEditSession.oneDriveWebUrl),
-						oneDriveFallbackUrl: wordEditSession.oneDriveWebUrl,
-					},
-					sessionId: wordEditSession.sessionId,
-					workingCopy: {
-						driveItemId: wordEditSession.driveItemId,
-						fileName: wordEditSession.workingCopyFileName,
-					},
-				},
-				{ status: 201 },
+			return startOutcomeResponse(
+				await lifecycle.start({ editor: editorSession.editor }),
 			);
 		},
 
@@ -124,10 +55,7 @@ export function createWordEditSessionHandlers(options: {
 			request: Request,
 			params: { sessionId: string },
 		): Promise<Response> {
-			const browserSessionId = readCookie(request, editorSessionCookieName);
-			const editorSession = browserSessionId
-				? options.editorAuthStore.readSession(browserSessionId)
-				: undefined;
+			const editorSession = readEditorSession(request, options.editorAuthStore);
 
 			if (!editorSession) {
 				return Response.json(
@@ -136,85 +64,11 @@ export function createWordEditSessionHandlers(options: {
 				);
 			}
 
-			const wordEditSession = options.wordEditSessionStore.readSession(
-				params.sessionId,
-			);
-
-			if (!wordEditSession) {
-				return Response.json(
-					{ error: "Word編集セッション was not found" },
-					{ status: 404 },
-				);
-			}
-
-			if (wordEditSession.editorId !== editorSession.editor.id) {
-				return Response.json(
-					{ error: "Word編集セッション belongs to a different 編集者" },
-					{ status: 403 },
-				);
-			}
-
-			const sessionState = options.wordEditSessionStore.readSessionState(
-				wordEditSession.sessionId,
-			);
-
-			if (sessionState === "discarded" || sessionState === "finished") {
-				return terminalSessionResponse({
-					message: "Word編集セッション is already closed.",
-					sessionId: wordEditSession.sessionId,
-					status: sessionState,
-				});
-			}
-
-			const tokenCache = options.editorAuthStore.readTokenCache(
-				editorSession.editor.id,
-			);
-
-			if (!tokenCache) {
-				return Response.json(
-					{ error: "Graph access is required" },
-					{ status: 401 },
-				);
-			}
-
-			let markdown: string;
-			let notifications: ImportNotification[] = [];
-			try {
-				await options.waitForWorkingCopyToStabilize?.();
-				const content = await options.graph.downloadAppFolderWorkingCopy({
-					driveItemId: wordEditSession.driveItemId,
-					tokenCache,
-				});
-				const result = await options.converter.convertDocxToMarkdown({
-					content,
-				});
-				({ markdown, notifications } = normalizeDocxToMarkdownResult(result));
-			} catch (error) {
-				options.wordEditSessionStore.markSessionImportError(
-					wordEditSession.sessionId,
-				);
-
-				return Response.json(
-					{
-						error: {
-							message: importErrorMessage(error),
-							type: "importError",
-						},
-						session: {
-							sessionId: wordEditSession.sessionId,
-							status: "importError",
-						},
-					},
-					{ status: 409 },
-				);
-			}
-			const webDocument = options.webDocumentStore.saveMarkdown(markdown);
-			options.wordEditSessionStore.finishSession(wordEditSession.sessionId);
-
-			return Response.json(
-				notifications.length > 0
-					? { notifications, webDocument }
-					: { webDocument },
+			return finishOutcomeResponse(
+				await lifecycle.finish({
+					editor: editorSession.editor,
+					sessionId: params.sessionId,
+				}),
 			);
 		},
 
@@ -222,10 +76,7 @@ export function createWordEditSessionHandlers(options: {
 			request: Request,
 			params: { sessionId: string },
 		): Promise<Response> {
-			const browserSessionId = readCookie(request, editorSessionCookieName);
-			const editorSession = browserSessionId
-				? options.editorAuthStore.readSession(browserSessionId)
-				: undefined;
+			const editorSession = readEditorSession(request, options.editorAuthStore);
 
 			if (!editorSession) {
 				return Response.json(
@@ -234,112 +85,99 @@ export function createWordEditSessionHandlers(options: {
 				);
 			}
 
-			const wordEditSession = options.wordEditSessionStore.readSession(
-				params.sessionId,
+			return discardOutcomeResponse(
+				await lifecycle.discardImportError({
+					editor: editorSession.editor,
+					sessionId: params.sessionId,
+				}),
 			);
-
-			if (!wordEditSession) {
-				return Response.json(
-					{ error: "Word編集セッション was not found" },
-					{ status: 404 },
-				);
-			}
-
-			if (wordEditSession.editorId !== editorSession.editor.id) {
-				return Response.json(
-					{ error: "Word編集セッション belongs to a different 編集者" },
-					{ status: 403 },
-				);
-			}
-
-			const sessionState = options.wordEditSessionStore.readSessionState(
-				wordEditSession.sessionId,
-			);
-
-			if (sessionState !== "importError") {
-				return terminalSessionResponse({
-					message: "Only a 取り込みエラー Word編集セッション can be discarded.",
-					sessionId: wordEditSession.sessionId,
-					status: sessionState ?? "active",
-				});
-			}
-
-			options.wordEditSessionStore.discardSession(wordEditSession.sessionId);
-
-			return Response.json({
-				session: {
-					sessionId: wordEditSession.sessionId,
-					status: "discarded",
-				},
-			});
 		},
 
 		async cleanup(): Promise<Response> {
-			const abandonedSessions =
-				options.wordEditSessionStore.abandonInactiveSessions(
-					abandonedSessionTimeoutMs,
-				);
-			const deletedWorkingCopies: Array<{
-				driveItemId: string;
-				sessionId: string;
-			}> = [];
-			const failures: Array<{
-				driveItemId: string;
-				message: string;
-				sessionId: string;
-			}> = [];
+			const outcome = await lifecycle.cleanup();
 
-			for (const candidate of options.wordEditSessionStore.listWorkingCopiesEligibleForDeletion(
-				workingCopyDeletionGraceMs,
-			)) {
-				const tokenCache = options.editorAuthStore.readTokenCache(
-					candidate.editorId,
-				);
-
-				if (!tokenCache) {
-					failures.push({
-						driveItemId: candidate.driveItemId,
-						message: "Graph access is required",
-						sessionId: candidate.sessionId,
-					});
-					continue;
-				}
-
-				try {
-					await options.graph.deleteAppFolderWorkingCopy({
-						driveItemId: candidate.driveItemId,
-						tokenCache,
-					});
-					options.wordEditSessionStore.markWorkingCopyDeleted(
-						candidate.sessionId,
-					);
-					deletedWorkingCopies.push({
-						driveItemId: candidate.driveItemId,
-						sessionId: candidate.sessionId,
-					});
-				} catch (error) {
-					failures.push({
-						driveItemId: candidate.driveItemId,
-						message: cleanupErrorMessage(error),
-						sessionId: candidate.sessionId,
-					});
-				}
-			}
-
-			return Response.json(
-				{
-					abandonedSessions,
-					deletedWorkingCopies,
-					failures,
-				},
-				{ status: failures.length > 0 ? 207 : 200 },
-			);
+			return Response.json(outcome, {
+				status: outcome.failures.length > 0 ? 207 : 200,
+			});
 		},
 	};
 }
 
-function createWordOfficeUri(oneDriveWebUrl: string): string {
-	return `ms-word:ofe|u|${oneDriveWebUrl}`;
+function createOneDriveWorkingCopyAdapter(options: {
+	converter: MarkdownDocxConverter;
+	editorAuthStore: Pick<EditorAuthStore, "readTokenCache">;
+	graph: GraphAppFolderBoundary;
+	waitForWorkingCopyToStabilize?: () => Promise<void>;
+}): OneDriveWorkingCopyAdapter {
+	return {
+		async create(input) {
+			const tokenCache = readRequiredTokenCache(
+				options.editorAuthStore,
+				input.editor.id,
+			);
+			const content = await options.converter.convertMarkdownToDocx({
+				markdown: input.markdown,
+			});
+
+			return options.graph.uploadAppFolderWorkingCopy({
+				content,
+				fileName: input.fileName,
+				tokenCache,
+			});
+		},
+
+		async read(input) {
+			const tokenCache = readRequiredTokenCache(
+				options.editorAuthStore,
+				input.editor.id,
+			);
+
+			await options.waitForWorkingCopyToStabilize?.();
+			const content = await options.graph.downloadAppFolderWorkingCopy({
+				driveItemId: input.driveItemId,
+				tokenCache,
+			});
+			const result = await options.converter.convertDocxToMarkdown({ content });
+
+			return normalizeDocxToMarkdownResult(result);
+		},
+
+		async delete(input) {
+			const tokenCache = readRequiredTokenCache(
+				options.editorAuthStore,
+				input.editor.id,
+			);
+
+			await options.graph.deleteAppFolderWorkingCopy({
+				driveItemId: input.driveItemId,
+				tokenCache,
+			});
+		},
+	};
+}
+
+function readRequiredTokenCache(
+	editorAuthStore: Pick<EditorAuthStore, "readTokenCache">,
+	editorId: string,
+): string {
+	const tokenCache = editorAuthStore.readTokenCache(editorId);
+
+	if (!tokenCache) {
+		throw createGraphAccessRequiredError();
+	}
+
+	return tokenCache;
+}
+
+function readEditorSession(
+	request: Request,
+	editorAuthStore: Pick<EditorAuthStore, "readSession">,
+) {
+	const browserSessionId = readCookie(request, editorSessionCookieName);
+
+	return browserSessionId
+		? editorAuthStore.readSession(browserSessionId)
+		: undefined;
 }
 
 function readCookie(request: Request, name: string): string | undefined {
@@ -360,16 +198,84 @@ function readCookie(request: Request, name: string): string | undefined {
 	return undefined;
 }
 
-function importErrorMessage(error: unknown): string {
-	return error instanceof Error
-		? error.message
-		: "終了取り込みでOneDrive作業コピーを取り込めませんでした。";
+function startOutcomeResponse(outcome: StartWordEditSessionOutcome): Response {
+	if (outcome.kind === "graphAccessRequired") {
+		return Response.json({ error: outcome.message }, { status: 401 });
+	}
+
+	return Response.json(
+		{
+			launchLinks: outcome.launchLinks,
+			sessionId: outcome.sessionId,
+			workingCopy: outcome.workingCopy,
+		},
+		{ status: 201 },
+	);
 }
 
-function cleanupErrorMessage(error: unknown): string {
-	return error instanceof Error
-		? error.message
-		: "OneDrive作業コピー cleanup failed.";
+function finishOutcomeResponse(
+	outcome: FinishWordEditSessionOutcome,
+): Response {
+	if (outcome.kind === "notFound") {
+		return Response.json(
+			{ error: "Word編集セッション was not found" },
+			{ status: 404 },
+		);
+	}
+
+	if (outcome.kind === "differentEditor") {
+		return Response.json(
+			{ error: "Word編集セッション belongs to a different 編集者" },
+			{ status: 403 },
+		);
+	}
+
+	if (outcome.kind === "invalidSessionState") {
+		return terminalSessionResponse(outcome);
+	}
+
+	if (outcome.kind === "importError") {
+		return Response.json(
+			{
+				error: outcome.error,
+				session: outcome.session,
+			},
+			{ status: 409 },
+		);
+	}
+
+	return Response.json(
+		outcome.notifications.length > 0
+			? {
+					notifications: outcome.notifications,
+					webDocument: outcome.webDocument,
+				}
+			: { webDocument: outcome.webDocument },
+	);
+}
+
+function discardOutcomeResponse(outcome: DiscardImportErrorOutcome): Response {
+	if (outcome.kind === "notFound") {
+		return Response.json(
+			{ error: "Word編集セッション was not found" },
+			{ status: 404 },
+		);
+	}
+
+	if (outcome.kind === "differentEditor") {
+		return Response.json(
+			{ error: "Word編集セッション belongs to a different 編集者" },
+			{ status: 403 },
+		);
+	}
+
+	if (outcome.kind === "invalidSessionState") {
+		return terminalSessionResponse(outcome);
+	}
+
+	return Response.json({
+		session: outcome.session,
+	});
 }
 
 function normalizeDocxToMarkdownResult(
@@ -387,8 +293,10 @@ function normalizeDocxToMarkdownResult(
 
 function terminalSessionResponse(input: {
 	message: string;
-	sessionId: string;
-	status: WordEditSessionState;
+	session: {
+		sessionId: string;
+		status: string;
+	};
 }): Response {
 	return Response.json(
 		{
@@ -397,8 +305,8 @@ function terminalSessionResponse(input: {
 				type: "invalidSessionState",
 			},
 			session: {
-				sessionId: input.sessionId,
-				status: input.status,
+				sessionId: input.session.sessionId,
+				status: input.session.status,
 			},
 		},
 		{ status: 409 },

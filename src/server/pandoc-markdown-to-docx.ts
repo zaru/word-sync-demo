@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { discardUnsupportedMarkdown } from "../domain/basic-markdown-import";
-import type { MarkdownDocxConverter } from "./word-edit-session-routes";
+import type { MarkdownDocxConverter } from "./word-edit-session-lifecycle";
 
 const execFileAsync = promisify(execFile);
 
