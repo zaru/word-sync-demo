@@ -16,7 +16,29 @@ type WordEditSessionResponse = {
 };
 
 type FinishWordEditSessionResponse = {
+	notifications?: Array<{
+		message: string;
+		type: "unsupportedContentDiscarded";
+	}>;
 	webDocument: WebDocument;
+};
+
+type ImportErrorResponse = {
+	error: {
+		message: string;
+		type: "importError";
+	};
+	session: {
+		sessionId: string;
+		status: "importError";
+	};
+};
+
+type DiscardWordEditSessionResponse = {
+	session: {
+		sessionId: string;
+		status: "discarded";
+	};
 };
 
 type LaunchState =
@@ -24,11 +46,19 @@ type LaunchState =
 	| { status: "starting" }
 	| { status: "ready"; session: WordEditSessionResponse }
 	| { status: "finishing"; session: WordEditSessionResponse }
+	| { status: "discarding"; session: WordEditSessionResponse }
+	| {
+			status: "importError";
+			session: WordEditSessionResponse;
+			message: string;
+	  }
 	| {
 			status: "finished";
+			notifications: FinishWordEditSessionResponse["notifications"];
 			session: WordEditSessionResponse;
 			webDocument: WebDocument;
 	  }
+	| { status: "discarded" }
 	| { status: "error"; message: string };
 
 export function WordEditSessionLauncher() {
@@ -78,6 +108,24 @@ export function WordEditSessionLauncher() {
 				},
 			);
 
+			if (response.status === 409) {
+				const body: unknown = await response.json();
+
+				if (
+					isImportErrorResponse(body) &&
+					body.session.sessionId === session.sessionId
+				) {
+					setState({
+						message: body.error.message,
+						session,
+						status: "importError",
+					});
+					return;
+				}
+
+				throw new Error("取り込みエラー response was invalid.");
+			}
+
 			if (!response.ok) {
 				throw new Error(
 					`Word編集セッションを終了取り込みできませんでした: ${response.status}`,
@@ -90,7 +138,12 @@ export function WordEditSessionLauncher() {
 				throw new Error("終了取り込み response was invalid.");
 			}
 
-			setState({ status: "finished", session, webDocument: body.webDocument });
+			setState({
+				notifications: body.notifications,
+				session,
+				status: "finished",
+				webDocument: body.webDocument,
+			});
 		} catch (error) {
 			setState({
 				status: "error",
@@ -102,11 +155,54 @@ export function WordEditSessionLauncher() {
 		}
 	}
 
+	async function discardWordEditSession(session: WordEditSessionResponse) {
+		setState({ status: "discarding", session });
+
+		try {
+			const response = await fetch(
+				`/api/word-edit-sessions/${encodeURIComponent(session.sessionId)}/discard`,
+				{
+					method: "POST",
+				},
+			);
+
+			if (!response.ok) {
+				throw new Error(
+					`Word編集セッションを破棄できませんでした: ${response.status}`,
+				);
+			}
+
+			const body: unknown = await response.json();
+
+			if (
+				!isDiscardWordEditSessionResponse(body) ||
+				body.session.sessionId !== session.sessionId
+			) {
+				throw new Error("Word編集セッション破棄 response was invalid.");
+			}
+
+			setState({ status: "discarded" });
+		} catch (error) {
+			setState({
+				message:
+					error instanceof Error
+						? error.message
+						: "Word編集セッションを破棄できませんでした。",
+				session,
+				status: "importError",
+			});
+		}
+	}
+
 	return (
 		<div className="word-launcher">
 			<button
 				className="auth-button"
-				disabled={state.status === "starting" || state.status === "finishing"}
+				disabled={
+					state.status === "starting" ||
+					state.status === "finishing" ||
+					state.status === "discarding"
+				}
 				onClick={startWordEditSession}
 				type="button"
 			>
@@ -129,9 +225,36 @@ export function WordEditSessionLauncher() {
 						{activeSession.workingCopy.fileName}
 					</span>
 					{state.status === "finished" ? (
-						<span className="editor-status">
-							終了取り込みが完了しました。Version {state.webDocument.version}
-						</span>
+						<>
+							<span className="editor-status">
+								終了取り込みが完了しました。Version {state.webDocument.version}
+							</span>
+							{state.notifications?.map((notification) => (
+								<p className="editor-warning" key={notification.message}>
+									{notification.message}
+								</p>
+							))}
+						</>
+					) : state.status === "importError" ? (
+						<>
+							<p className="editor-error">{state.message}</p>
+							<button
+								className="secondary-button"
+								onClick={() => finishWordEditSession(activeSession)}
+								type="button"
+							>
+								終了取り込みを再試行
+							</button>
+							<button
+								className="secondary-button"
+								onClick={() => discardWordEditSession(activeSession)}
+								type="button"
+							>
+								Word編集セッションを破棄
+							</button>
+						</>
+					) : state.status === "discarding" ? (
+						<span className="editor-status">Word編集セッションを破棄中...</span>
 					) : (
 						<button
 							className="secondary-button"
@@ -149,6 +272,9 @@ export function WordEditSessionLauncher() {
 			{state.status === "error" ? (
 				<p className="editor-error">{state.message}</p>
 			) : null}
+			{state.status === "discarded" ? (
+				<p className="editor-status">Word編集セッションを破棄しました。</p>
+			) : null}
 		</div>
 	);
 }
@@ -159,6 +285,8 @@ function sessionFromState(
 	if (
 		state.status === "ready" ||
 		state.status === "finishing" ||
+		state.status === "discarding" ||
+		state.status === "importError" ||
 		state.status === "finished"
 	) {
 		return state.session;
@@ -190,7 +318,103 @@ function isFinishWordEditSessionResponse(
 		return false;
 	}
 
-	return isWebDocument((body as Record<string, unknown>).webDocument);
+	const candidate = body as Record<string, unknown>;
+
+	return (
+		isWebDocument(candidate.webDocument) &&
+		(candidate.notifications === undefined ||
+			isImportNotifications(candidate.notifications))
+	);
+}
+
+function isDiscardWordEditSessionResponse(
+	body: unknown,
+): body is DiscardWordEditSessionResponse {
+	if (typeof body !== "object" || body === null) {
+		return false;
+	}
+
+	return isDiscardedSession((body as Record<string, unknown>).session);
+}
+
+function isImportErrorResponse(body: unknown): body is ImportErrorResponse {
+	if (typeof body !== "object" || body === null) {
+		return false;
+	}
+
+	const candidate = body as Record<string, unknown>;
+
+	return (
+		isImportError(candidate.error) && isImportErrorSession(candidate.session)
+	);
+}
+
+function isImportError(error: unknown): error is ImportErrorResponse["error"] {
+	if (typeof error !== "object" || error === null) {
+		return false;
+	}
+
+	const candidate = error as Record<string, unknown>;
+
+	return (
+		candidate.type === "importError" && typeof candidate.message === "string"
+	);
+}
+
+function isImportNotifications(
+	notifications: unknown,
+): notifications is NonNullable<
+	FinishWordEditSessionResponse["notifications"]
+> {
+	return (
+		Array.isArray(notifications) && notifications.every(isImportNotification)
+	);
+}
+
+function isImportNotification(
+	notification: unknown,
+): notification is NonNullable<
+	FinishWordEditSessionResponse["notifications"]
+>[number] {
+	if (typeof notification !== "object" || notification === null) {
+		return false;
+	}
+
+	const candidate = notification as Record<string, unknown>;
+
+	return (
+		candidate.type === "unsupportedContentDiscarded" &&
+		typeof candidate.message === "string"
+	);
+}
+
+function isImportErrorSession(
+	session: unknown,
+): session is ImportErrorResponse["session"] {
+	if (typeof session !== "object" || session === null) {
+		return false;
+	}
+
+	const candidate = session as Record<string, unknown>;
+
+	return (
+		typeof candidate.sessionId === "string" &&
+		candidate.status === "importError"
+	);
+}
+
+function isDiscardedSession(
+	session: unknown,
+): session is DiscardWordEditSessionResponse["session"] {
+	if (typeof session !== "object" || session === null) {
+		return false;
+	}
+
+	const candidate = session as Record<string, unknown>;
+
+	return (
+		typeof candidate.sessionId === "string" && candidate.status === "discarded"
+	);
 }
 
 function isWebDocument(webDocument: unknown): webDocument is WebDocument {
