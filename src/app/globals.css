@@ -52,6 +52,60 @@ h1 {
   box-shadow: 0 24px 70px rgb(29 43 76 / 12%);
 }
 
+.auth-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 20px;
+  border: 1px solid #d9dfeb;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 16px 48px rgb(29 43 76 / 10%);
+}
+
+.auth-card h2 {
+  margin: 0 0 8px;
+}
+
+.auth-card p {
+  margin: 0;
+  color: #526070;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.auth-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 999px;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.auth-button {
+  border: 1px solid #1f5eff;
+  background: #1f5eff;
+  color: #ffffff;
+}
+
+.secondary-button {
+  border: 1px solid #c5cedd;
+  background: #ffffff;
+  color: #172033;
+}
+
 .editor-toolbar {
   display: flex;
   flex-wrap: wrap;

@@ -14,6 +14,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@azure/msal-node": "^5.2.1",
     "@lexical/code": "^0.44.0",
     "@lexical/headless": "^0.44.0",
     "@lexical/link": "^0.44.0",

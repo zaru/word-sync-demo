@@ -1,10 +1,26 @@
+import { cookies } from 'next/headers';
+
 import { WebDocumentEditor } from './web-document-editor';
+
+import { EditorAuthPanel, type BrowserEditorSession } from './editor-auth-panel';
+import { readEditorSessionFromCookieValue } from '../server/editor-auth';
+import { editorSessionCookieName } from '../server/editor-auth-routes';
 import { getWebDocumentStore } from '../server/web-document-store';
 
 export const dynamic = 'force-dynamic';
 
-export default function Home() {
+export default async function Home() {
   const document = getWebDocumentStore().loadSharedDocument();
+  const cookieStore = await cookies();
+  const editorSession = readEditorSessionFromCookieValue(
+    cookieStore.get(editorSessionCookieName)?.value,
+  );
+  const browserSession: BrowserEditorSession = editorSession
+    ? {
+        signedIn: true,
+        editor: editorSession.editor,
+      }
+    : { signedIn: false };
 
   return (
     <main className="page-shell">
@@ -16,6 +32,7 @@ export default function Home() {
           変更は短い待ち時間のあと自動保存され、別タブの更新はバージョンポーリングで反映されます。
         </p>
       </section>
+      <EditorAuthPanel session={browserSession} />
       <WebDocumentEditor initialDocument={document} />
     </main>
   );
