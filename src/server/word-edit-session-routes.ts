@@ -3,8 +3,9 @@ import { editorSessionCookieName } from "./editor-auth-routes";
 import type { EditorAuthStore } from "./editor-auth-store";
 import type { WordEditSessionStore } from "./word-edit-session-store";
 
-export type MarkdownToDocxConverter = {
+export type MarkdownDocxConverter = {
 	convertMarkdownToDocx(input: { markdown: string }): Promise<Uint8Array>;
+	convertDocxToMarkdown(input: { content: Uint8Array }): Promise<string>;
 };
 
 export type GraphAppFolderBoundary = {
@@ -16,14 +17,22 @@ export type GraphAppFolderBoundary = {
 		driveItemId: string;
 		webUrl: string;
 	}>;
+	downloadAppFolderWorkingCopy(input: {
+		driveItemId: string;
+		tokenCache: string;
+	}): Promise<Uint8Array>;
 };
 
 export function createWordEditSessionHandlers(options: {
-	converter: MarkdownToDocxConverter;
+	converter: MarkdownDocxConverter;
 	createSessionId: () => string;
 	editorAuthStore: Pick<EditorAuthStore, "readSession" | "readTokenCache">;
 	graph: GraphAppFolderBoundary;
-	webDocumentStore: { loadSharedDocument(): WebDocument };
+	waitForWorkingCopyToStabilize?: () => Promise<void>;
+	webDocumentStore: {
+		loadSharedDocument(): WebDocument;
+		saveMarkdown(markdown: string): WebDocument;
+	};
 	wordEditSessionStore: WordEditSessionStore;
 }) {
 	return {
@@ -87,6 +96,65 @@ export function createWordEditSessionHandlers(options: {
 				},
 				{ status: 201 },
 			);
+		},
+
+		async finish(
+			request: Request,
+			params: { sessionId: string },
+		): Promise<Response> {
+			const browserSessionId = readCookie(request, editorSessionCookieName);
+			const editorSession = browserSessionId
+				? options.editorAuthStore.readSession(browserSessionId)
+				: undefined;
+
+			if (!editorSession) {
+				return Response.json(
+					{ error: "編集者 sign-in is required" },
+					{ status: 401 },
+				);
+			}
+
+			const wordEditSession = options.wordEditSessionStore.readSession(
+				params.sessionId,
+			);
+
+			if (!wordEditSession) {
+				return Response.json(
+					{ error: "Word編集セッション was not found" },
+					{ status: 404 },
+				);
+			}
+
+			if (wordEditSession.editorId !== editorSession.editor.id) {
+				return Response.json(
+					{ error: "Word編集セッション belongs to a different 編集者" },
+					{ status: 403 },
+				);
+			}
+
+			const tokenCache = options.editorAuthStore.readTokenCache(
+				editorSession.editor.id,
+			);
+
+			if (!tokenCache) {
+				return Response.json(
+					{ error: "Graph access is required" },
+					{ status: 401 },
+				);
+			}
+
+			await options.waitForWorkingCopyToStabilize?.();
+			const content = await options.graph.downloadAppFolderWorkingCopy({
+				driveItemId: wordEditSession.driveItemId,
+				tokenCache,
+			});
+			const markdown = await options.converter.convertDocxToMarkdown({
+				content,
+			});
+			const webDocument = options.webDocumentStore.saveMarkdown(markdown);
+			options.wordEditSessionStore.finishSession(wordEditSession.sessionId);
+
+			return Response.json({ webDocument });
 		},
 	};
 }

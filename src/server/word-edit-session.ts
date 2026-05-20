@@ -13,6 +13,8 @@ import {
 	type WordEditSessionStore,
 } from "./word-edit-session-store";
 
+const workingCopyStabilizationDelayMs = 1_500;
+
 let cachedStore:
 	| { databasePath: string; store: WordEditSessionStore }
 	| undefined;
@@ -42,6 +44,7 @@ export function getWordEditSessionHandlers() {
 			clientId: requireEnv("MICROSOFT_CLIENT_ID"),
 			clientSecret: requireEnv("MICROSOFT_CLIENT_SECRET"),
 		}),
+		waitForWorkingCopyToStabilize: () => wait(workingCopyStabilizationDelayMs),
 		webDocumentStore: getWebDocumentStore(),
 		wordEditSessionStore: getWordEditSessionStore(),
 	});
@@ -55,4 +58,10 @@ function requireEnv(name: string): string {
 	}
 
 	return value;
+}
+
+function wait(delayMs: number): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, delayMs);
+	});
 }
