@@ -1,7 +1,7 @@
-import { getEditorAuthHandlers } from '../../../server/editor-auth';
+import { getEditorAuthHandlers } from "../../../server/editor-auth";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
 
 export async function POST(request: Request): Promise<Response> {
-  return getEditorAuthHandlers().logout(request);
+	return getEditorAuthHandlers().logout(request);
 }
