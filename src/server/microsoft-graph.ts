@@ -13,39 +13,18 @@ export function createMicrosoftGraphAppFolderBoundary(options: {
 }): GraphAppFolderBoundary {
 	return {
 		async uploadAppFolderWorkingCopy(input) {
-			const client = new ConfidentialClientApplication({
-				auth: {
-					authority: microsoftAuthority,
-					clientId: options.clientId,
-					clientSecret: options.clientSecret,
-				},
+			const accessToken = await acquireGraphAccessToken({
+				clientId: options.clientId,
+				clientSecret: options.clientSecret,
+				tokenCache: input.tokenCache,
 			});
-			const tokenCache = client.getTokenCache();
-			tokenCache.deserialize(input.tokenCache);
-
-			const [account] = await tokenCache.getAllAccounts();
-
-			if (!account) {
-				throw new Error("Signed-in 編集者 Graph token cache has no account.");
-			}
-
-			const authResult = await client.acquireTokenSilent({
-				account,
-				scopes: [graphAppFolderUploadScope],
-			});
-
-			if (!authResult?.accessToken) {
-				throw new Error(
-					"Could not acquire Graph access for OneDrive作業コピー.",
-				);
-			}
 
 			const response = await fetch(createAppFolderUploadUrl(input.fileName), {
 				body: new Blob([toArrayBuffer(input.content)], {
 					type: docxContentType,
 				}),
 				headers: {
-					authorization: `Bearer ${authResult.accessToken}`,
+					authorization: `Bearer ${accessToken}`,
 					"content-type": docxContentType,
 				},
 				method: "PUT",
@@ -68,11 +47,74 @@ export function createMicrosoftGraphAppFolderBoundary(options: {
 				webUrl: body.webUrl,
 			};
 		},
+
+		async downloadAppFolderWorkingCopy(input) {
+			const accessToken = await acquireGraphAccessToken({
+				clientId: options.clientId,
+				clientSecret: options.clientSecret,
+				tokenCache: input.tokenCache,
+			});
+
+			const response = await fetch(
+				createDriveItemContentUrl(input.driveItemId),
+				{
+					headers: {
+						authorization: `Bearer ${accessToken}`,
+					},
+					method: "GET",
+				},
+			);
+
+			if (!response.ok) {
+				throw new Error(
+					`Could not download OneDrive作業コピー from App Folder: ${response.status}`,
+				);
+			}
+
+			return new Uint8Array(await response.arrayBuffer());
+		},
 	};
 }
 
 function createAppFolderUploadUrl(fileName: string): string {
 	return `https://graph.microsoft.com/v1.0/me/drive/special/approot:/${encodeURIComponent(fileName)}:/content`;
+}
+
+function createDriveItemContentUrl(driveItemId: string): string {
+	return `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(driveItemId)}/content`;
+}
+
+async function acquireGraphAccessToken(options: {
+	clientId: string;
+	clientSecret: string;
+	tokenCache: string;
+}): Promise<string> {
+	const client = new ConfidentialClientApplication({
+		auth: {
+			authority: microsoftAuthority,
+			clientId: options.clientId,
+			clientSecret: options.clientSecret,
+		},
+	});
+	const tokenCache = client.getTokenCache();
+	tokenCache.deserialize(options.tokenCache);
+
+	const [account] = await tokenCache.getAllAccounts();
+
+	if (!account) {
+		throw new Error("Signed-in 編集者 Graph token cache has no account.");
+	}
+
+	const authResult = await client.acquireTokenSilent({
+		account,
+		scopes: [graphAppFolderUploadScope],
+	});
+
+	if (!authResult?.accessToken) {
+		throw new Error("Could not acquire Graph access for OneDrive作業コピー.");
+	}
+
+	return authResult.accessToken;
 }
 
 function toArrayBuffer(content: Uint8Array): ArrayBuffer {

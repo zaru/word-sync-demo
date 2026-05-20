@@ -22,6 +22,10 @@ type WordEditSessionRow = {
 	one_drive_web_url: string;
 };
 
+type WordEditSessionStateRow = {
+	finished_at: string | null;
+};
+
 export function createWordEditSessionStore(options: { databasePath: string }) {
 	mkdirSync(dirname(options.databasePath), { recursive: true });
 	const database = new DatabaseSync(options.databasePath);
@@ -35,9 +39,11 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
       drive_item_id TEXT NOT NULL,
       working_copy_file_name TEXT NOT NULL,
       one_drive_web_url TEXT NOT NULL,
+      finished_at TEXT,
       created_at TEXT NOT NULL
     ) STRICT;
   `);
+	ensureFinishedAtColumn(database);
 
 	return {
 		saveStartedSession(input: WordEditSession): WordEditSession {
@@ -98,6 +104,34 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
 			};
 		},
 
+		finishSession(sessionId: string): void {
+			const result = database
+				.prepare(
+					"UPDATE word_edit_sessions SET finished_at = datetime('now') WHERE session_id = ? AND finished_at IS NULL",
+				)
+				.run(sessionId);
+
+			if (result.changes !== 1) {
+				throw new Error(
+					"Word編集セッション could not transition to セッション終了.",
+				);
+			}
+		},
+
+		readSessionState(sessionId: string): "active" | "finished" | undefined {
+			const row = database
+				.prepare(
+					"SELECT finished_at FROM word_edit_sessions WHERE session_id = ?",
+				)
+				.get(sessionId);
+
+			if (!isWordEditSessionStateRow(row)) {
+				return undefined;
+			}
+
+			return row.finished_at === null ? "active" : "finished";
+		},
+
 		close(): void {
 			database.close();
 		},
@@ -107,6 +141,25 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
 export type WordEditSessionStore = ReturnType<
 	typeof createWordEditSessionStore
 >;
+
+function ensureFinishedAtColumn(database: DatabaseSync): void {
+	const columns = database
+		.prepare("PRAGMA table_info(word_edit_sessions)")
+		.all()
+		.flatMap((row) =>
+			typeof row === "object" &&
+			row !== null &&
+			typeof (row as Record<string, unknown>).name === "string"
+				? [(row as Record<string, string>).name]
+				: [],
+		);
+
+	if (!columns.includes("finished_at")) {
+		database.exec(
+			"ALTER TABLE word_edit_sessions ADD COLUMN finished_at TEXT;",
+		);
+	}
+}
 
 function isWordEditSessionRow(row: unknown): row is WordEditSessionRow {
 	if (typeof row !== "object" || row === null) {
@@ -124,4 +177,16 @@ function isWordEditSessionRow(row: unknown): row is WordEditSessionRow {
 		typeof candidate.working_copy_file_name === "string" &&
 		typeof candidate.one_drive_web_url === "string"
 	);
+}
+
+function isWordEditSessionStateRow(
+	row: unknown,
+): row is WordEditSessionStateRow {
+	if (typeof row !== "object" || row === null) {
+		return false;
+	}
+
+	const finishedAt = (row as Record<string, unknown>).finished_at;
+
+	return finishedAt === null || typeof finishedAt === "string";
 }
