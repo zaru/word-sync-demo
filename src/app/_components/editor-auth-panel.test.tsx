@@ -54,7 +54,7 @@ describe("EditorAuthPanel", () => {
 				{
 					launchLinks: {
 						officeUri:
-							"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+							"ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 						oneDriveFallbackUrl:
 							"https://onedrive.example/Webドキュメント-word-session-1.docx",
 					},
@@ -89,7 +89,7 @@ describe("EditorAuthPanel", () => {
 			await screen.findByRole("link", { name: "ローカルWordで開く" }),
 		).toHaveAttribute(
 			"href",
-			"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+			"ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 		);
 		expect(
 			screen.getByRole("link", { name: "OneDriveで開く" }),
@@ -113,7 +113,7 @@ describe("EditorAuthPanel", () => {
 					return Response.json(
 						{
 							launchLinks: {
-								officeUri: `ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-${sessionNumber}.docx`,
+								officeUri: `ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-${sessionNumber}.docx`,
 								oneDriveFallbackUrl: `https://onedrive.example/Webドキュメント-word-session-${sessionNumber}.docx`,
 							},
 							sessionId: `word-session-${sessionNumber}`,
@@ -201,7 +201,7 @@ describe("EditorAuthPanel", () => {
 						{
 							launchLinks: {
 								officeUri:
-									"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+									"ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 								oneDriveFallbackUrl:
 									"https://onedrive.example/Webドキュメント-word-session-1.docx",
 							},
@@ -273,7 +273,7 @@ describe("EditorAuthPanel", () => {
 						{
 							launchLinks: {
 								officeUri:
-									"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+									"ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 								oneDriveFallbackUrl:
 									"https://onedrive.example/Webドキュメント-word-session-1.docx",
 							},
@@ -344,7 +344,7 @@ describe("EditorAuthPanel", () => {
 						{
 							launchLinks: {
 								officeUri:
-									"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+									"ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 								oneDriveFallbackUrl:
 									"https://onedrive.example/Webドキュメント-word-session-1.docx",
 							},
@@ -443,7 +443,7 @@ describe("EditorAuthPanel", () => {
 						{
 							launchLinks: {
 								officeUri:
-									"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+									"ms-word:ofe|u|https://onedrive.example/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 								oneDriveFallbackUrl:
 									"https://onedrive.example/Webドキュメント-word-session-1.docx",
 							},

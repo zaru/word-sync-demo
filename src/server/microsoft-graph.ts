@@ -1,6 +1,6 @@
 import { ConfidentialClientApplication } from "@azure/msal-node";
 
-import type { GraphAppFolderBoundary } from "./word-edit-session-routes";
+import type { GraphAppFolderBoundary } from "./word-edit-session-lifecycle";
 
 const microsoftAuthority = "https://login.microsoftonline.com/common";
 const graphAppFolderUploadScope = "Files.ReadWrite.AppFolder";
@@ -42,10 +42,12 @@ export function createMicrosoftGraphAppFolderBoundary(options: {
 				throw new Error("Graph App Folder upload response was invalid.");
 			}
 
-			return {
+			const metadata = await readDriveItemMetadata({
+				accessToken,
 				driveItemId: body.id,
-				webUrl: body.webUrl,
-			};
+			});
+
+			return driveItemWorkingCopy(metadata);
 		},
 
 		async downloadAppFolderWorkingCopy(input) {
@@ -105,8 +107,38 @@ function createDriveItemContentUrl(driveItemId: string): string {
 	return `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(driveItemId)}/content`;
 }
 
+function createDriveItemMetadataUrl(driveItemId: string): string {
+	return `${createDriveItemUrl(driveItemId)}?$select=id,sharepointIds,webDavUrl,webUrl`;
+}
+
 function createDriveItemUrl(driveItemId: string): string {
 	return `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(driveItemId)}`;
+}
+
+async function readDriveItemMetadata(input: {
+	accessToken: string;
+	driveItemId: string;
+}): Promise<DriveItemResponse> {
+	const response = await fetch(createDriveItemMetadataUrl(input.driveItemId), {
+		headers: {
+			authorization: `Bearer ${input.accessToken}`,
+		},
+		method: "GET",
+	});
+
+	if (!response.ok) {
+		throw new Error(
+			`Could not read OneDrive作業コピー metadata from App Folder: ${response.status}`,
+		);
+	}
+
+	const body: unknown = await response.json();
+
+	if (!isDriveItemResponse(body)) {
+		throw new Error("Graph App Folder metadata response was invalid.");
+	}
+
+	return body;
 }
 
 async function acquireGraphAccessToken(options: {
@@ -149,9 +181,28 @@ function toArrayBuffer(content: Uint8Array): ArrayBuffer {
 	return buffer;
 }
 
-function isDriveItemResponse(
-	body: unknown,
-): body is { id: string; webUrl: string } {
+type DriveItemResponse = {
+	id: string;
+	sharepointIds?: { listItemUniqueId: string; webId: string };
+	webDavUrl?: string;
+	webUrl: string;
+};
+
+function driveItemWorkingCopy(body: DriveItemResponse) {
+	return {
+		driveItemId: body.id,
+		officeUriMetadata: body.sharepointIds
+			? {
+					contentId: body.sharepointIds.webId,
+					objectResourceId: body.sharepointIds.listItemUniqueId,
+				}
+			: undefined,
+		webDavUrl: body.webDavUrl,
+		webUrl: body.webUrl,
+	};
+}
+
+function isDriveItemResponse(body: unknown): body is DriveItemResponse {
 	if (typeof body !== "object" || body === null) {
 		return false;
 	}
@@ -159,6 +210,26 @@ function isDriveItemResponse(
 	const candidate = body as Record<string, unknown>;
 
 	return (
-		typeof candidate.id === "string" && typeof candidate.webUrl === "string"
+		typeof candidate.id === "string" &&
+		(candidate.sharepointIds === undefined ||
+			isSharePointIds(candidate.sharepointIds)) &&
+		(candidate.webDavUrl === undefined ||
+			typeof candidate.webDavUrl === "string") &&
+		typeof candidate.webUrl === "string"
+	);
+}
+
+function isSharePointIds(
+	sharepointIds: unknown,
+): sharepointIds is { listItemUniqueId: string; webId: string } {
+	if (typeof sharepointIds !== "object" || sharepointIds === null) {
+		return false;
+	}
+
+	const candidate = sharepointIds as Record<string, unknown>;
+
+	return (
+		typeof candidate.listItemUniqueId === "string" &&
+		typeof candidate.webId === "string"
 	);
 }

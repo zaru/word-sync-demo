@@ -261,12 +261,19 @@ describe("Word編集セッション routes", () => {
 					return new TextEncoder().encode(input.markdown);
 				},
 			},
+			createOfficeUriTimestamp: () => 1_779_288_599_962,
 			createSessionId: () => "word-session-1",
 			editorAuthStore,
 			graph: {
 				async uploadAppFolderWorkingCopy(input) {
 					return {
 						driveItemId: "drive-item-1",
+						officeUriMetadata: {
+							contentId: "01f5d442-f410-4df9-9f58-d1ac3f8d46ba",
+							objectResourceId: "81dd2b71-fb82-4b33-ac71-fed46bf0f87a",
+						},
+						webDavUrl:
+							"https://d.docs.live.net/editor-drive/Webドキュメント-word-session-1.docx",
 						webUrl: `https://onedrive.example/${input.fileName}`,
 					};
 				},
@@ -296,7 +303,7 @@ describe("Word編集セッション routes", () => {
 		await expect(response.json()).resolves.toEqual({
 			launchLinks: {
 				officeUri:
-					"ms-word:ofe|u|https://onedrive.example/Webドキュメント-word-session-1.docx",
+					"ms-word:ofe|or|81dd2b71-fb82-4b33-ac71-fed46bf0f87a|cid|01f5d442-f410-4df9-9f58-d1ac3f8d46ba|ct|1779288599962|u|https://d.docs.live.net/editor-drive/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-word-session-1.docx",
 				oneDriveFallbackUrl:
 					"https://onedrive.example/Webドキュメント-word-session-1.docx",
 			},
