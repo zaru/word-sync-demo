@@ -36,7 +36,14 @@ export type GraphAppFolderBoundary = {
 		driveItemId: string;
 		tokenCache: string;
 	}): Promise<Uint8Array>;
+	deleteAppFolderWorkingCopy(input: {
+		driveItemId: string;
+		tokenCache: string;
+	}): Promise<void>;
 };
+
+const abandonedSessionTimeoutMs = 2 * 60 * 60 * 1_000;
+const workingCopyDeletionGraceMs = 24 * 60 * 60 * 1_000;
 
 export function createWordEditSessionHandlers(options: {
 	converter: MarkdownDocxConverter;
@@ -266,6 +273,68 @@ export function createWordEditSessionHandlers(options: {
 				},
 			});
 		},
+
+		async cleanup(): Promise<Response> {
+			const abandonedSessions =
+				options.wordEditSessionStore.abandonInactiveSessions(
+					abandonedSessionTimeoutMs,
+				);
+			const deletedWorkingCopies: Array<{
+				driveItemId: string;
+				sessionId: string;
+			}> = [];
+			const failures: Array<{
+				driveItemId: string;
+				message: string;
+				sessionId: string;
+			}> = [];
+
+			for (const candidate of options.wordEditSessionStore.listWorkingCopiesEligibleForDeletion(
+				workingCopyDeletionGraceMs,
+			)) {
+				const tokenCache = options.editorAuthStore.readTokenCache(
+					candidate.editorId,
+				);
+
+				if (!tokenCache) {
+					failures.push({
+						driveItemId: candidate.driveItemId,
+						message: "Graph access is required",
+						sessionId: candidate.sessionId,
+					});
+					continue;
+				}
+
+				try {
+					await options.graph.deleteAppFolderWorkingCopy({
+						driveItemId: candidate.driveItemId,
+						tokenCache,
+					});
+					options.wordEditSessionStore.markWorkingCopyDeleted(
+						candidate.sessionId,
+					);
+					deletedWorkingCopies.push({
+						driveItemId: candidate.driveItemId,
+						sessionId: candidate.sessionId,
+					});
+				} catch (error) {
+					failures.push({
+						driveItemId: candidate.driveItemId,
+						message: cleanupErrorMessage(error),
+						sessionId: candidate.sessionId,
+					});
+				}
+			}
+
+			return Response.json(
+				{
+					abandonedSessions,
+					deletedWorkingCopies,
+					failures,
+				},
+				{ status: failures.length > 0 ? 207 : 200 },
+			);
+		},
 	};
 }
 
@@ -295,6 +364,12 @@ function importErrorMessage(error: unknown): string {
 	return error instanceof Error
 		? error.message
 		: "終了取り込みでOneDrive作業コピーを取り込めませんでした。";
+}
+
+function cleanupErrorMessage(error: unknown): string {
+	return error instanceof Error
+		? error.message
+		: "OneDrive作業コピー cleanup failed.";
 }
 
 function normalizeDocxToMarkdownResult(

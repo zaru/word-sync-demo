@@ -106,4 +106,46 @@ describe("Microsoft Graph App Folder boundary", () => {
 		]);
 		expect(fetchGraph).toHaveBeenCalledTimes(1);
 	});
+
+	it("deletes the OneDrive作業コピー from the App Folder by DriveItem ID", async () => {
+		const fetchGraph = vi.fn(
+			async (url: RequestInfo | URL, init?: RequestInit) => {
+				expect(String(url)).toBe(
+					"https://graph.microsoft.com/v1.0/me/drive/items/drive-item-1",
+				);
+				expect(init?.method).toBe("DELETE");
+				expect(init?.headers).toEqual({
+					authorization: "Bearer graph-access-token",
+				});
+
+				return new Response(null, { status: 204 });
+			},
+		);
+		vi.stubGlobal("fetch", fetchGraph);
+		const { createMicrosoftGraphAppFolderBoundary } = await import(
+			"./microsoft-graph"
+		);
+
+		const graph = createMicrosoftGraphAppFolderBoundary({
+			clientId: "client-id",
+			clientSecret: "client-secret",
+		});
+
+		await expect(
+			graph.deleteAppFolderWorkingCopy({
+				driveItemId: "drive-item-1",
+				tokenCache: '{"RefreshToken":{"cached":true}}',
+			}),
+		).resolves.toBeUndefined();
+		expect(msalCalls.deserializedTokenCaches).toEqual([
+			'{"RefreshToken":{"cached":true}}',
+		]);
+		expect(msalCalls.silentTokenRequests).toEqual([
+			{
+				account: { homeAccountId: "home-account-1" },
+				scopes: ["Files.ReadWrite.AppFolder"],
+			},
+		]);
+		expect(fetchGraph).toHaveBeenCalledTimes(1);
+	});
 });
