@@ -73,6 +73,27 @@ export function createMicrosoftGraphAppFolderBoundary(options: {
 
 			return new Uint8Array(await response.arrayBuffer());
 		},
+
+		async deleteAppFolderWorkingCopy(input) {
+			const accessToken = await acquireGraphAccessToken({
+				clientId: options.clientId,
+				clientSecret: options.clientSecret,
+				tokenCache: input.tokenCache,
+			});
+
+			const response = await fetch(createDriveItemUrl(input.driveItemId), {
+				headers: {
+					authorization: `Bearer ${accessToken}`,
+				},
+				method: "DELETE",
+			});
+
+			if (!response.ok) {
+				throw new Error(
+					`Could not delete OneDrive作業コピー from App Folder: ${response.status}`,
+				);
+			}
+		},
 	};
 }
 
@@ -82,6 +103,10 @@ function createAppFolderUploadUrl(fileName: string): string {
 
 function createDriveItemContentUrl(driveItemId: string): string {
 	return `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(driveItemId)}/content`;
+}
+
+function createDriveItemUrl(driveItemId: string): string {
+	return `https://graph.microsoft.com/v1.0/me/drive/items/${encodeURIComponent(driveItemId)}`;
 }
 
 async function acquireGraphAccessToken(options: {
