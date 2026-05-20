@@ -32,6 +32,7 @@ export function WebDocumentEditor({ initialDocument }: WebDocumentEditorProps) {
   const [currentVersion, setCurrentVersion] = useState(initialDocument.version);
   const [status, setStatus] = useState<SaveStatus>('saved');
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
+  const [isEditorMounted, setIsEditorMounted] = useState(false);
   const lastMarkdownRef = useRef(initialDocument.markdown);
 
   const autosave = useMemo(
@@ -52,6 +53,10 @@ export function WebDocumentEditor({ initialDocument }: WebDocumentEditorProps) {
       }),
     [],
   );
+
+  useEffect(() => {
+    setIsEditorMounted(true);
+  }, []);
 
   useEffect(() => autosave.cancel, [autosave]);
 
@@ -78,36 +83,40 @@ export function WebDocumentEditor({ initialDocument }: WebDocumentEditorProps) {
           {statusLabel(status, errorMessage)}
         </span>
       </div>
-      <LexicalComposer initialConfig={initialConfig}>
-        <div className="editor-shell">
-          <RichEditor />
-          <HistoryPlugin />
-          <ListPlugin />
-          <LinkPlugin />
-          <MarkdownShortcutPlugin transformers={markdownTransformers} />
-          <AutoFocusPlugin />
-          <OnChangePlugin
-            ignoreSelectionChange
-            onChange={(editorState) => {
-              handleEditorChange(editorState, lastMarkdownRef, autosave, setStatus);
-            }}
-          />
-          <VersionPollingPlugin
-            autosave={autosave}
-            currentVersion={currentVersion}
-            lastMarkdownRef={lastMarkdownRef}
-            onReload={(document) => {
-              setCurrentVersion(document.version);
-              setStatus('reloaded');
-              setErrorMessage(undefined);
-            }}
-            onError={(error) => {
-              setStatus('error');
-              setErrorMessage(error instanceof Error ? error.message : 'Polling failed.');
-            }}
-          />
-        </div>
-      </LexicalComposer>
+      {isEditorMounted ? (
+        <LexicalComposer initialConfig={initialConfig}>
+          <div className="editor-shell">
+            <RichEditor />
+            <HistoryPlugin />
+            <ListPlugin />
+            <LinkPlugin />
+            <MarkdownShortcutPlugin transformers={markdownTransformers} />
+            <AutoFocusPlugin />
+            <OnChangePlugin
+              ignoreSelectionChange
+              onChange={(editorState) => {
+                handleEditorChange(editorState, lastMarkdownRef, autosave, setStatus);
+              }}
+            />
+            <VersionPollingPlugin
+              autosave={autosave}
+              currentVersion={currentVersion}
+              lastMarkdownRef={lastMarkdownRef}
+              onReload={(document) => {
+                setCurrentVersion(document.version);
+                setStatus('reloaded');
+                setErrorMessage(undefined);
+              }}
+              onError={(error) => {
+                setStatus('error');
+                setErrorMessage(error instanceof Error ? error.message : 'Polling failed.');
+              }}
+            />
+          </div>
+        </LexicalComposer>
+      ) : (
+        <div className="editor-shell" aria-hidden="true" />
+      )}
     </section>
   );
 }
