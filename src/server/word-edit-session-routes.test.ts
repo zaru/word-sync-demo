@@ -36,6 +36,25 @@ describe("Word編集セッション routes", () => {
 		};
 	}
 
+	function createStoresWithClock(now: () => Date) {
+		const tempDir = mkdtempSync(join(tmpdir(), "word-sync-demo-word-edit-"));
+		tempDirs.push(tempDir);
+
+		return {
+			editorAuthStore: new EditorAuthStore({
+				databasePath: join(tempDir, "auth.sqlite"),
+			}),
+			wordEditSessionStore: createWordEditSessionStore({
+				databasePath: join(tempDir, "word-edit-sessions.sqlite"),
+				now,
+			}),
+			webDocumentStore: new WebDocumentStore({
+				databasePath: join(tempDir, "web-document.sqlite"),
+				seedMarkdown: "# Before Word編集セッション",
+			}),
+		};
+	}
+
 	async function finishSessionWithImportFailure(options: {
 		conversionError?: Error;
 		downloadError?: Error;
@@ -971,6 +990,272 @@ describe("Word編集セッション routes", () => {
 		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
 			"finished",
 		);
+	});
+
+	it("moves a Word編集セッション with 2 hours of inactivity to 放置終了 without importing or changing the Webドキュメント", async () => {
+		let currentTime = new Date("2026-05-20T00:00:00.000Z");
+		const { editorAuthStore, webDocumentStore, wordEditSessionStore } =
+			createStoresWithClock(() => currentTime);
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		let downloadWasCalled = false;
+		let convertDocxToMarkdownWasCalled = false;
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown() {
+					convertDocxToMarkdownWasCalled = true;
+
+					return "# Should not be imported";
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy() {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/Webドキュメント-word-session-1.docx",
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					downloadWasCalled = true;
+
+					return new TextEncoder().encode("should not be imported");
+				},
+			},
+			webDocumentStore,
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		currentTime = new Date("2026-05-20T02:00:01.000Z");
+		const cleanupResponse = await handlers.cleanup();
+
+		expect(cleanupResponse.status).toBe(200);
+		await expect(cleanupResponse.json()).resolves.toEqual({
+			abandonedSessions: ["word-session-1"],
+			deletedWorkingCopies: [],
+			failures: [],
+		});
+		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
+			"abandoned",
+		);
+		expect(downloadWasCalled).toBe(false);
+		expect(convertDocxToMarkdownWasCalled).toBe(false);
+		expect(webDocumentStore.loadSharedDocument()).toEqual({
+			id: "shared",
+			markdown: "# Before Word編集セッション",
+			version: 1,
+		});
+	});
+
+	it("deletes セッション終了 and 放置終了 OneDrive作業コピー after the 24 hour 作業コピー削除猶予", async () => {
+		let currentTime = new Date("2026-05-20T00:00:00.000Z");
+		const { editorAuthStore, webDocumentStore, wordEditSessionStore } =
+			createStoresWithClock(() => currentTime);
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		const deletedWorkingCopies: Array<{
+			driveItemId: string;
+			tokenCache: string;
+		}> = [];
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown(input) {
+					return new TextDecoder().decode(input.content);
+				},
+			},
+			createSessionId: createSequentialId("word-session"),
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy(input) {
+					return {
+						driveItemId:
+							input.fileName === "Webドキュメント-word-session-1.docx"
+								? "drive-item-finished"
+								: "drive-item-abandoned",
+						webUrl: `https://onedrive.example/${input.fileName}`,
+					};
+				},
+				async downloadAppFolderWorkingCopy(input) {
+					return new TextEncoder().encode(
+						input.driveItemId === "drive-item-finished"
+							? "# Imported from finished session"
+							: "# Should not import abandoned session",
+					);
+				},
+				async deleteAppFolderWorkingCopy(input) {
+					deletedWorkingCopies.push(input);
+				},
+			},
+			webDocumentStore,
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		await handlers.start(request);
+		currentTime = new Date("2026-05-20T01:59:59.000Z");
+		await handlers.finish(request, { sessionId: "word-session-1" });
+		currentTime = new Date("2026-05-20T02:00:01.000Z");
+		await handlers.cleanup();
+		currentTime = new Date("2026-05-21T01:59:58.000Z");
+		const beforeGraceResponse = await handlers.cleanup();
+		currentTime = new Date("2026-05-21T02:00:02.000Z");
+		const cleanupResponse = await handlers.cleanup();
+
+		expect(beforeGraceResponse.status).toBe(200);
+		await expect(beforeGraceResponse.json()).resolves.toEqual({
+			abandonedSessions: [],
+			deletedWorkingCopies: [],
+			failures: [],
+		});
+		expect(cleanupResponse.status).toBe(200);
+		await expect(cleanupResponse.json()).resolves.toEqual({
+			abandonedSessions: [],
+			deletedWorkingCopies: [
+				{
+					driveItemId: "drive-item-finished",
+					sessionId: "word-session-1",
+				},
+				{
+					driveItemId: "drive-item-abandoned",
+					sessionId: "word-session-2",
+				},
+			],
+			failures: [],
+		});
+		expect(deletedWorkingCopies).toEqual([
+			{
+				driveItemId: "drive-item-finished",
+				tokenCache: '{"RefreshToken":{"cached":true}}',
+			},
+			{
+				driveItemId: "drive-item-abandoned",
+				tokenCache: '{"RefreshToken":{"cached":true}}',
+			},
+		]);
+	});
+
+	it("surfaces OneDrive作業コピー deletion failures and retries them without corrupting session state", async () => {
+		let currentTime = new Date("2026-05-20T00:00:00.000Z");
+		const { editorAuthStore, webDocumentStore, wordEditSessionStore } =
+			createStoresWithClock(() => currentTime);
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		let deleteAttempts = 0;
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown() {
+					return "# Imported from Word";
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy() {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/Webドキュメント-word-session-1.docx",
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					return new TextEncoder().encode("imported docx");
+				},
+				async deleteAppFolderWorkingCopy() {
+					deleteAttempts += 1;
+
+					if (deleteAttempts === 1) {
+						throw new Error("Graph delete throttled.");
+					}
+				},
+			},
+			webDocumentStore,
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		await handlers.finish(request, { sessionId: "word-session-1" });
+		currentTime = new Date("2026-05-21T00:00:01.000Z");
+		const failedCleanupResponse = await handlers.cleanup();
+		const retriedCleanupResponse = await handlers.cleanup();
+
+		expect(failedCleanupResponse.status).toBe(207);
+		await expect(failedCleanupResponse.json()).resolves.toEqual({
+			abandonedSessions: [],
+			deletedWorkingCopies: [],
+			failures: [
+				{
+					driveItemId: "drive-item-1",
+					message: "Graph delete throttled.",
+					sessionId: "word-session-1",
+				},
+			],
+		});
+		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
+			"finished",
+		);
+		expect(retriedCleanupResponse.status).toBe(200);
+		await expect(retriedCleanupResponse.json()).resolves.toEqual({
+			abandonedSessions: [],
+			deletedWorkingCopies: [
+				{
+					driveItemId: "drive-item-1",
+					sessionId: "word-session-1",
+				},
+			],
+			failures: [],
+		});
+		expect(deleteAttempts).toBe(2);
 	});
 });
 
