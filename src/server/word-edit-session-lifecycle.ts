@@ -27,6 +27,11 @@ export type MarkdownDocxConverter = {
 	}): Promise<string | DocxToMarkdownResult>;
 };
 
+type OfficeUriMetadata = {
+	contentId: string;
+	objectResourceId: string;
+};
+
 export type GraphAppFolderBoundary = {
 	uploadAppFolderWorkingCopy(input: {
 		content: Uint8Array;
@@ -34,6 +39,8 @@ export type GraphAppFolderBoundary = {
 		tokenCache: string;
 	}): Promise<{
 		driveItemId: string;
+		officeUriMetadata?: OfficeUriMetadata;
+		webDavUrl?: string;
 		webUrl: string;
 	}>;
 	downloadAppFolderWorkingCopy(input: {
@@ -53,6 +60,8 @@ export type OneDriveWorkingCopyAdapter = {
 		markdown: string;
 	}): Promise<{
 		driveItemId: string;
+		officeUriMetadata?: OfficeUriMetadata;
+		webDavUrl?: string;
 		webUrl: string;
 	}>;
 	read(input: {
@@ -163,6 +172,7 @@ const abandonedSessionTimeoutMs = 2 * 60 * 60 * 1_000;
 const workingCopyDeletionGraceMs = 24 * 60 * 60 * 1_000;
 
 export function createWordEditSessionLifecycle(options: {
+	createOfficeUriTimestamp?: () => number;
 	createSessionId: () => string;
 	oneDriveWorkingCopies: OneDriveWorkingCopyAdapter;
 	webDocumentStore: {
@@ -210,7 +220,13 @@ export function createWordEditSessionLifecycle(options: {
 			return {
 				kind: "started",
 				launchLinks: {
-					officeUri: createWordOfficeUri(wordEditSession.oneDriveWebUrl),
+					officeUri: createWordOfficeUri(
+						{
+							metadata: workingCopy.officeUriMetadata,
+							url: workingCopy.webDavUrl ?? wordEditSession.oneDriveWebUrl,
+						},
+						options.createOfficeUriTimestamp ?? Date.now,
+					),
 					oneDriveFallbackUrl: wordEditSession.oneDriveWebUrl,
 				},
 				sessionId: wordEditSession.sessionId,
@@ -415,8 +431,27 @@ function invalidSessionState(input: {
 	};
 }
 
-function createWordOfficeUri(oneDriveWebUrl: string): string {
-	return `ms-word:ofe|u|${oneDriveWebUrl}`;
+function createWordOfficeUri(
+	input: { metadata?: OfficeUriMetadata; url: string },
+	createTimestamp: () => number,
+): string {
+	const url = new URL(input.url).href;
+
+	if (!input.metadata) {
+		return `ms-word:ofe|u|${url}`;
+	}
+
+	return [
+		"ms-word:ofe",
+		"or",
+		input.metadata.objectResourceId,
+		"cid",
+		input.metadata.contentId,
+		"ct",
+		String(createTimestamp()),
+		"u",
+		url,
+	].join("|");
 }
 
 function lifecycleErrorMessage(error: unknown, fallback: string): string {

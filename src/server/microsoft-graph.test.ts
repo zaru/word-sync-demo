@@ -42,27 +42,49 @@ describe("Microsoft Graph App Folder boundary", () => {
 	it("uploads the OneDrive作業コピー to the App Folder with signed-in editor Graph access", async () => {
 		const fetchGraph = vi.fn(
 			async (url: RequestInfo | URL, init?: RequestInit) => {
-				expect(String(url)).toBe(
-					"https://graph.microsoft.com/v1.0/me/drive/special/approot:/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88%201.docx:/content",
-				);
-				expect(init?.method).toBe("PUT");
-				expect(init?.headers).toEqual({
-					authorization: "Bearer graph-access-token",
-					"content-type":
-						"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-				});
+				if (
+					String(url) ===
+					"https://graph.microsoft.com/v1.0/me/drive/special/approot:/Web%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88%201.docx:/content"
+				) {
+					expect(init?.method).toBe("PUT");
+					expect(init?.headers).toEqual({
+						authorization: "Bearer graph-access-token",
+						"content-type":
+							"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+					});
 
-				if (!(init?.body instanceof Blob)) {
-					throw new Error("Graph upload body was not a Blob.");
+					if (!(init?.body instanceof Blob)) {
+						throw new Error("Graph upload body was not a Blob.");
+					}
+
+					expect(new Uint8Array(await init.body.arrayBuffer())).toEqual(
+						new Uint8Array([1, 2, 3]),
+					);
+
+					return Response.json({
+						id: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/_layouts/15/Doc.aspx?sourcedoc=%7Bdrive-item-1%7D&action=default",
+					});
 				}
 
-				expect(new Uint8Array(await init.body.arrayBuffer())).toEqual(
-					new Uint8Array([1, 2, 3]),
+				expect(String(url)).toBe(
+					"https://graph.microsoft.com/v1.0/me/drive/items/drive-item-1?$select=id,sharepointIds,webDavUrl,webUrl",
 				);
+				expect(init?.method).toBe("GET");
+				expect(init?.headers).toEqual({
+					authorization: "Bearer graph-access-token",
+				});
 
 				return Response.json({
 					id: "drive-item-1",
-					webUrl: "https://onedrive.example/Webドキュメント 1.docx",
+					sharepointIds: {
+						listItemUniqueId: "81dd2b71-fb82-4b33-ac71-fed46bf0f87a",
+						webId: "01f5d442-f410-4df9-9f58-d1ac3f8d46ba",
+					},
+					webDavUrl:
+						"https://d.docs.live.net/editor-drive/Webドキュメント 1.docx",
+					webUrl: "https://onedrive.example/Documents/Webドキュメント 1.docx",
 				});
 			},
 		);
@@ -84,7 +106,12 @@ describe("Microsoft Graph App Folder boundary", () => {
 			}),
 		).resolves.toEqual({
 			driveItemId: "drive-item-1",
-			webUrl: "https://onedrive.example/Webドキュメント 1.docx",
+			officeUriMetadata: {
+				contentId: "01f5d442-f410-4df9-9f58-d1ac3f8d46ba",
+				objectResourceId: "81dd2b71-fb82-4b33-ac71-fed46bf0f87a",
+			},
+			webDavUrl: "https://d.docs.live.net/editor-drive/Webドキュメント 1.docx",
+			webUrl: "https://onedrive.example/Documents/Webドキュメント 1.docx",
 		});
 		expect(msalCalls.configs).toEqual([
 			{
@@ -104,7 +131,7 @@ describe("Microsoft Graph App Folder boundary", () => {
 				scopes: ["Files.ReadWrite.AppFolder"],
 			},
 		]);
-		expect(fetchGraph).toHaveBeenCalledTimes(1);
+		expect(fetchGraph).toHaveBeenCalledTimes(2);
 	});
 
 	it("deletes the OneDrive作業コピー from the App Folder by DriveItem ID", async () => {

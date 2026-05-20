@@ -18,6 +18,7 @@ import type { WordEditSessionStore } from "./word-edit-session-store";
 
 export function createWordEditSessionHandlers(options: {
 	converter: MarkdownDocxConverter;
+	createOfficeUriTimestamp?: () => number;
 	createSessionId: () => string;
 	editorAuthStore: Pick<EditorAuthStore, "readSession" | "readTokenCache">;
 	graph: GraphAppFolderBoundary;
@@ -29,6 +30,7 @@ export function createWordEditSessionHandlers(options: {
 	wordEditSessionStore: WordEditSessionStore;
 }) {
 	const lifecycle = createWordEditSessionLifecycle({
+		createOfficeUriTimestamp: options.createOfficeUriTimestamp,
 		createSessionId: options.createSessionId,
 		oneDriveWorkingCopies: createOneDriveWorkingCopyAdapter(options),
 		webDocumentStore: options.webDocumentStore,
