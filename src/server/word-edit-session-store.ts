@@ -23,8 +23,16 @@ type WordEditSessionRow = {
 };
 
 type WordEditSessionStateRow = {
+	discarded_at: string | null;
 	finished_at: string | null;
+	import_error_at: string | null;
 };
+
+export type WordEditSessionState =
+	| "active"
+	| "discarded"
+	| "finished"
+	| "importError";
 
 export function createWordEditSessionStore(options: { databasePath: string }) {
 	mkdirSync(dirname(options.databasePath), { recursive: true });
@@ -39,11 +47,27 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
       drive_item_id TEXT NOT NULL,
       working_copy_file_name TEXT NOT NULL,
       one_drive_web_url TEXT NOT NULL,
+      discarded_at TEXT,
       finished_at TEXT,
+      import_error_at TEXT,
       created_at TEXT NOT NULL
     ) STRICT;
   `);
-	ensureFinishedAtColumn(database);
+	ensureColumn(
+		database,
+		"discarded_at",
+		"ALTER TABLE word_edit_sessions ADD COLUMN discarded_at TEXT;",
+	);
+	ensureColumn(
+		database,
+		"finished_at",
+		"ALTER TABLE word_edit_sessions ADD COLUMN finished_at TEXT;",
+	);
+	ensureColumn(
+		database,
+		"import_error_at",
+		"ALTER TABLE word_edit_sessions ADD COLUMN import_error_at TEXT;",
+	);
 
 	return {
 		saveStartedSession(input: WordEditSession): WordEditSession {
@@ -107,7 +131,7 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
 		finishSession(sessionId: string): void {
 			const result = database
 				.prepare(
-					"UPDATE word_edit_sessions SET finished_at = datetime('now') WHERE session_id = ? AND finished_at IS NULL",
+					"UPDATE word_edit_sessions SET finished_at = datetime('now'), import_error_at = NULL WHERE session_id = ? AND discarded_at IS NULL AND finished_at IS NULL",
 				)
 				.run(sessionId);
 
@@ -118,10 +142,36 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
 			}
 		},
 
-		readSessionState(sessionId: string): "active" | "finished" | undefined {
+		markSessionImportError(sessionId: string): void {
+			const result = database
+				.prepare(
+					"UPDATE word_edit_sessions SET import_error_at = datetime('now') WHERE session_id = ? AND discarded_at IS NULL AND finished_at IS NULL",
+				)
+				.run(sessionId);
+
+			if (result.changes !== 1) {
+				throw new Error(
+					"Word編集セッション could not transition to 取り込みエラー.",
+				);
+			}
+		},
+
+		discardSession(sessionId: string): void {
+			const result = database
+				.prepare(
+					"UPDATE word_edit_sessions SET discarded_at = datetime('now') WHERE session_id = ? AND discarded_at IS NULL AND finished_at IS NULL AND import_error_at IS NOT NULL",
+				)
+				.run(sessionId);
+
+			if (result.changes !== 1) {
+				throw new Error("Word編集セッション could not transition to 破棄.");
+			}
+		},
+
+		readSessionState(sessionId: string): WordEditSessionState | undefined {
 			const row = database
 				.prepare(
-					"SELECT finished_at FROM word_edit_sessions WHERE session_id = ?",
+					"SELECT discarded_at, finished_at, import_error_at FROM word_edit_sessions WHERE session_id = ?",
 				)
 				.get(sessionId);
 
@@ -129,7 +179,15 @@ export function createWordEditSessionStore(options: { databasePath: string }) {
 				return undefined;
 			}
 
-			return row.finished_at === null ? "active" : "finished";
+			if (row.finished_at !== null) {
+				return "finished";
+			}
+
+			if (row.discarded_at !== null) {
+				return "discarded";
+			}
+
+			return row.import_error_at === null ? "active" : "importError";
 		},
 
 		close(): void {
@@ -142,7 +200,11 @@ export type WordEditSessionStore = ReturnType<
 	typeof createWordEditSessionStore
 >;
 
-function ensureFinishedAtColumn(database: DatabaseSync): void {
+function ensureColumn(
+	database: DatabaseSync,
+	columnName: string,
+	addColumnSql: string,
+): void {
 	const columns = database
 		.prepare("PRAGMA table_info(word_edit_sessions)")
 		.all()
@@ -154,10 +216,8 @@ function ensureFinishedAtColumn(database: DatabaseSync): void {
 				: [],
 		);
 
-	if (!columns.includes("finished_at")) {
-		database.exec(
-			"ALTER TABLE word_edit_sessions ADD COLUMN finished_at TEXT;",
-		);
+	if (!columns.includes(columnName)) {
+		database.exec(addColumnSql);
 	}
 }
 
@@ -187,6 +247,12 @@ function isWordEditSessionStateRow(
 	}
 
 	const finishedAt = (row as Record<string, unknown>).finished_at;
+	const importErrorAt = (row as Record<string, unknown>).import_error_at;
+	const discardedAt = (row as Record<string, unknown>).discarded_at;
 
-	return finishedAt === null || typeof finishedAt === "string";
+	return (
+		(finishedAt === null || typeof finishedAt === "string") &&
+		(importErrorAt === null || typeof importErrorAt === "string") &&
+		(discardedAt === null || typeof discardedAt === "string")
+	);
 }

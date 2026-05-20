@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import { discardUnsupportedMarkdown } from "../domain/basic-markdown-import";
 import type { MarkdownDocxConverter } from "./word-edit-session-routes";
 
 const execFileAsync = promisify(execFile);
@@ -38,7 +39,22 @@ export function createPandocMarkdownToDocxConverter(): MarkdownDocxConverter {
 				await writeFile(docxPath, input.content);
 				await execFileAsync("pandoc", [docxPath, "-o", markdownPath]);
 
-				return await readFile(markdownPath, "utf8");
+				const importedMarkdown = discardUnsupportedMarkdown(
+					await readFile(markdownPath, "utf8"),
+				);
+
+				return {
+					markdown: importedMarkdown.markdown,
+					notifications: importedMarkdown.discardedUnsupportedContent
+						? [
+								{
+									message:
+										"基本Markdown要素として取り込めないWord編集を破棄しました。",
+									type: "unsupportedContentDiscarded",
+								},
+							]
+						: [],
+				};
 			} finally {
 				await rm(workingDirectory, { force: true, recursive: true });
 			}

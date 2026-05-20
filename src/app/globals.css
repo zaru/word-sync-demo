@@ -136,6 +136,11 @@ h1 {
 	font-weight: 700;
 }
 
+.editor-warning {
+	color: #9a6700;
+	font-weight: 700;
+}
+
 .editor-shell {
 	position: relative;
 	min-height: 460px;

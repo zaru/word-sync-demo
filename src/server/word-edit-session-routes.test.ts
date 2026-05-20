@@ -31,6 +31,98 @@ describe("Word編集セッション routes", () => {
 		};
 	}
 
+	async function finishSessionWithImportFailure(options: {
+		conversionError?: Error;
+		downloadError?: Error;
+		stabilizationError?: Error;
+	}) {
+		const { editorAuthStore, wordEditSessionStore } = createStores();
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		const webDocument = {
+			id: "shared" as const,
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		};
+		let saveMarkdownWasCalled = false;
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown() {
+					if (options.conversionError) {
+						throw options.conversionError;
+					}
+
+					return "# Imported from Word";
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy() {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/Webドキュメント-word-session-1.docx",
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					if (options.downloadError) {
+						throw options.downloadError;
+					}
+
+					return new TextEncoder().encode("imported docx");
+				},
+			},
+			async waitForWorkingCopyToStabilize() {
+				if (options.stabilizationError) {
+					throw options.stabilizationError;
+				}
+			},
+			webDocumentStore: {
+				loadSharedDocument() {
+					return webDocument;
+				},
+				saveMarkdown() {
+					saveMarkdownWasCalled = true;
+					return {
+						id: "shared",
+						markdown: "# Should not be saved",
+						version: 4,
+					};
+				},
+			},
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		const finishResponse = await handlers.finish(request, {
+			sessionId: "word-session-1",
+		});
+
+		return {
+			finishResponse,
+			saveMarkdownWasCalled,
+			webDocument,
+			wordEditSessionStore,
+		};
+	}
+
 	it("starts a fresh Word編集セッション with a new OneDrive作業コピー for every request", async () => {
 		const { editorAuthStore, wordEditSessionStore } = createStores();
 		editorAuthStore.saveSignedInEditor({
@@ -298,6 +390,333 @@ describe("Word編集セッション routes", () => {
 			markdown: "# Imported from Word",
 			version: 4,
 		});
+	});
+
+	it("finishes successfully with a visible 互換外破棄通知 when unsupported Word content is discarded", async () => {
+		const { editorAuthStore, wordEditSessionStore } = createStores();
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		let webDocument = {
+			id: "shared" as const,
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		};
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown() {
+					return {
+						markdown: "# Imported from Word",
+						notifications: [
+							{
+								message:
+									"基本Markdown要素として取り込めないWord編集を破棄しました。",
+								type: "unsupportedContentDiscarded",
+							},
+						],
+					};
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy() {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/Webドキュメント-word-session-1.docx",
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					return new TextEncoder().encode("imported docx");
+				},
+			},
+			webDocumentStore: {
+				loadSharedDocument() {
+					return webDocument;
+				},
+				saveMarkdown(markdown) {
+					webDocument = {
+						id: "shared",
+						markdown,
+						version: webDocument.version + 1,
+					};
+
+					return webDocument;
+				},
+			},
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		const finishResponse = await handlers.finish(request, {
+			sessionId: "word-session-1",
+		});
+
+		expect(finishResponse.status).toBe(200);
+		await expect(finishResponse.json()).resolves.toEqual({
+			notifications: [
+				{
+					message: "基本Markdown要素として取り込めないWord編集を破棄しました。",
+					type: "unsupportedContentDiscarded",
+				},
+			],
+			webDocument: {
+				id: "shared",
+				markdown: "# Imported from Word",
+				version: 4,
+			},
+		});
+		expect(webDocument).toEqual({
+			id: "shared",
+			markdown: "# Imported from Word",
+			version: 4,
+		});
+		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
+			"finished",
+		);
+	});
+
+	it("surfaces 取り込みエラー when the OneDrive作業コピー cannot be downloaded without changing the Webドキュメント", async () => {
+		const { editorAuthStore, wordEditSessionStore } = createStores();
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		const webDocument = {
+			id: "shared" as const,
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		};
+		let saveMarkdownWasCalled = false;
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown() {
+					throw new Error("DOCX conversion should not run.");
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy() {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/Webドキュメント-word-session-1.docx",
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					throw new Error("OneDrive作業コピー was missing or deleted.");
+				},
+			},
+			webDocumentStore: {
+				loadSharedDocument() {
+					return webDocument;
+				},
+				saveMarkdown() {
+					saveMarkdownWasCalled = true;
+					return {
+						id: "shared",
+						markdown: "# Should not be saved",
+						version: 4,
+					};
+				},
+			},
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		const finishResponse = await handlers.finish(request, {
+			sessionId: "word-session-1",
+		});
+
+		expect(finishResponse.status).toBe(409);
+		await expect(finishResponse.json()).resolves.toEqual({
+			error: {
+				message: "OneDrive作業コピー was missing or deleted.",
+				type: "importError",
+			},
+			session: {
+				sessionId: "word-session-1",
+				status: "importError",
+			},
+		});
+		expect(saveMarkdownWasCalled).toBe(false);
+		expect(webDocument).toEqual({
+			id: "shared",
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		});
+		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
+			"importError",
+		);
+	});
+
+	it.each([
+		{
+			errorOptions: {
+				downloadError: new Error("Graph download access was denied."),
+			},
+			message: "Graph download access was denied.",
+			name: "Graph access or download failure",
+		},
+		{
+			errorOptions: {
+				stabilizationError: new Error("OneDrive作業コピー did not stabilize."),
+			},
+			message: "OneDrive作業コピー did not stabilize.",
+			name: "unstable OneDrive作業コピー",
+		},
+		{
+			errorOptions: {
+				conversionError: new Error("DOCX conversion failed."),
+			},
+			message: "DOCX conversion failed.",
+			name: "DOCX conversion failure",
+		},
+	])("surfaces 取り込みエラー for $name", async ({ errorOptions, message }) => {
+		const {
+			finishResponse,
+			saveMarkdownWasCalled,
+			webDocument,
+			wordEditSessionStore,
+		} = await finishSessionWithImportFailure(errorOptions);
+
+		expect(finishResponse.status).toBe(409);
+		await expect(finishResponse.json()).resolves.toEqual({
+			error: {
+				message,
+				type: "importError",
+			},
+			session: {
+				sessionId: "word-session-1",
+				status: "importError",
+			},
+		});
+		expect(saveMarkdownWasCalled).toBe(false);
+		expect(webDocument).toEqual({
+			id: "shared",
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		});
+		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
+			"importError",
+		);
+	});
+
+	it("lets the 編集者 discard an errored Word編集セッション without changing the Webドキュメント", async () => {
+		const { editorAuthStore, wordEditSessionStore } = createStores();
+		editorAuthStore.saveSignedInEditor({
+			editor: {
+				id: "editor-1",
+				displayName: "編集者 A",
+				username: "editor@example.com",
+			},
+			sessionId: "browser-session-1",
+			tokenCache: '{"RefreshToken":{"cached":true}}',
+		});
+		const webDocument = {
+			id: "shared" as const,
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		};
+		let saveMarkdownWasCalled = false;
+		const handlers = createWordEditSessionHandlers({
+			converter: {
+				async convertMarkdownToDocx(input) {
+					return new TextEncoder().encode(input.markdown);
+				},
+				async convertDocxToMarkdown() {
+					throw new Error("DOCX conversion should not run.");
+				},
+			},
+			createSessionId: () => "word-session-1",
+			editorAuthStore,
+			graph: {
+				async uploadAppFolderWorkingCopy() {
+					return {
+						driveItemId: "drive-item-1",
+						webUrl:
+							"https://onedrive.example/Webドキュメント-word-session-1.docx",
+					};
+				},
+				async downloadAppFolderWorkingCopy() {
+					throw new Error("OneDrive作業コピー was missing or deleted.");
+				},
+			},
+			webDocumentStore: {
+				loadSharedDocument() {
+					return webDocument;
+				},
+				saveMarkdown() {
+					saveMarkdownWasCalled = true;
+					return {
+						id: "shared",
+						markdown: "# Should not be saved",
+						version: 4,
+					};
+				},
+			},
+			wordEditSessionStore,
+		});
+		const request = new Request("http://localhost/api/word-edit-sessions", {
+			method: "POST",
+			headers: {
+				cookie: `${editorSessionCookieName}=browser-session-1`,
+			},
+		});
+
+		await handlers.start(request);
+		await handlers.finish(request, { sessionId: "word-session-1" });
+		const discardResponse = await handlers.discard(request, {
+			sessionId: "word-session-1",
+		});
+
+		expect(discardResponse.status).toBe(200);
+		await expect(discardResponse.json()).resolves.toEqual({
+			session: {
+				sessionId: "word-session-1",
+				status: "discarded",
+			},
+		});
+		expect(saveMarkdownWasCalled).toBe(false);
+		expect(webDocument).toEqual({
+			id: "shared",
+			markdown: "# Before Word編集セッション",
+			version: 3,
+		});
+		expect(wordEditSessionStore.readSessionState("word-session-1")).toBe(
+			"discarded",
+		);
 	});
 
 	it("transitions the Word編集セッション to セッション終了 after successful 終了取り込み", async () => {
