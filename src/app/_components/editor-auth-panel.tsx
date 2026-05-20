@@ -1,4 +1,5 @@
 import type { EditorProfile } from "../../server/editor-auth-store";
+import { WordEditSessionLauncher } from "./word-edit-session-launcher";
 
 export type BrowserEditorSession =
 	| { signedIn: false }
@@ -41,6 +42,7 @@ export function EditorAuthPanel({ session }: EditorAuthPanelProps) {
 				</p>
 			</div>
 			<div className="auth-actions">
+				<WordEditSessionLauncher />
 				<form action="/auth/logout" method="post">
 					<button className="secondary-button" type="submit">
 						ログアウト
