@@ -1,7 +1,7 @@
-import { getWebDocumentStore } from '../../../../server/web-document-store';
+import { getWebDocumentStore } from "../../../../server/web-document-store";
 
-export const runtime = 'nodejs';
+export const runtime = "nodejs";
 
 export async function GET(): Promise<Response> {
-  return Response.json({ version: getWebDocumentStore().readVersion() });
+	return Response.json({ version: getWebDocumentStore().readVersion() });
 }
