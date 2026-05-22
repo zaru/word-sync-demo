@@ -1,0 +1,17 @@
+ render services create \
+   --name word-sync-demo \
+   --type web_service \
+   --runtime docker \
+   --repo https://github.com/zaru/word-sync-demo \
+   --branch main \
+   --plan free \
+   --region singapore \
+   --auto-deploy \
+   --env-var APP_BASE_URL=https://word-sync-demo.onrender.com \
+   --env-var MICROSOFT_CLIENT_ID="$MICROSOFT_CLIENT_ID" \
+   --env-var MICROSOFT_CLIENT_SECRET="$MICROSOFT_CLIENT_SECRET" \
+   --env-var WEB_DOCUMENT_DB_PATH=/tmp/word-sync-demo/web-document.sqlite \
+   --env-var EDITOR_AUTH_DB_PATH=/tmp/word-sync-demo/editor-auth.sqlite \
+   --env-var WORD_EDIT_SESSION_DB_PATH=/tmp/word-sync-demo/word-edit-sessions.sqlite \
+   --confirm \
+   -o json
